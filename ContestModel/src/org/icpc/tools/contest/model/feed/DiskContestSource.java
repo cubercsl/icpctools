@@ -823,6 +823,7 @@ public class DiskContestSource extends ContestSource {
 			throw e;
 		}
 		try {
+			notifyListeners(ConnectionState.READING);
 			if (feedFile.getName().endsWith("xml")) {
 				XMLFeedParser xmlParser = new XMLFeedParser();
 				xmlParser.parse(contest, in);
