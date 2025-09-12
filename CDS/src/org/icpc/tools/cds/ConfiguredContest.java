@@ -540,6 +540,24 @@ public class ConfiguredContest {
 		return getContestForAccount(account);
 	}
 
+	public Contest getContestByRole(Session session) {
+		if (contest == null)
+			loadContest();
+
+		IAccount account = PUBLIC_ACCOUNT;
+		String user = session.getUserPrincipal() != null ? session.getUserPrincipal().getName() : null;
+		if (user != null) {
+			List<IAccount> accounts = CDSConfig.getInstance().getAccounts();
+			for (IAccount acc : accounts) {
+				if (user.equals(acc.getUsername())) {
+					account = acc;
+				}
+			}
+		}
+
+		return getContestForAccount(account);
+	}
+
 	private Contest getContestForAccount(IAccount account) {
 		// return the full contest for administrators
 		if (IAccount.ADMIN.equals(account.getAccountType()))
