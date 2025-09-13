@@ -2,8 +2,8 @@ package org.icpc.tools.cds.service;
 
 import java.io.IOException;
 import java.io.PrintWriter;
-import java.io.Writer;
 import java.nio.ByteBuffer;
+import java.util.List;
 
 import org.icpc.tools.cds.CDSConfig;
 import org.icpc.tools.cds.ConfiguredContest;
@@ -11,6 +11,7 @@ import org.icpc.tools.cds.service.ContestFeedExecutor.Feed;
 import org.icpc.tools.cds.service.ContestObjectQueue.ContestObjectDelta;
 import org.icpc.tools.cds.presentations.WebSocketConfig;
 import org.icpc.tools.contest.Trace;
+import org.icpc.tools.contest.model.IContest;
 import org.icpc.tools.contest.model.IContestListener;
 import org.icpc.tools.contest.model.IContestObject;
 import org.icpc.tools.contest.model.feed.NDJSONFeedWriter;
@@ -20,6 +21,8 @@ import jakarta.websocket.CloseReason;
 import jakarta.websocket.CloseReason.CloseCodes;
 import jakarta.websocket.EndpointConfig;
 import jakarta.websocket.OnClose;
+import jakarta.websocket.OnError;
+import jakarta.websocket.OnMessage;
 import jakarta.websocket.OnOpen;
 import jakarta.websocket.Session;
 import jakarta.websocket.server.PathParam;
@@ -30,6 +33,31 @@ public class ContestFeedWebSocket {
     private Contest contest;
     private ConfiguredContest cc;
     private IContestListener listener;
+    private static final int TRACE_CHARS = 120;
+
+    private static int getEventIndexFromParameter(Session session, IContest contest, String param) {
+        List<String> list = session.getRequestParameterMap().get(param);
+        if (list == null || list.isEmpty())
+            return -1;
+        String idVal = list.get(0);
+        String prefix = NDJSONFeedWriter.getContestPrefix(contest);
+        if (idVal == null || !idVal.startsWith(prefix))
+            return -2;
+        try {
+            return Integer.parseInt(idVal.substring(3)) + 1;
+        } catch (Exception e) {
+            return -2;
+        }
+    }
+
+    private static int getEventIndex(Session session, IContest contest) {
+        int ind = getEventIndexFromParameter(session, contest, "since_token");
+        if (ind == -1)
+            ind = getEventIndexFromParameter(session, contest, "since_id");
+        if (ind == -1)
+            ind = 0;
+        return ind;
+    }
 
     @OnOpen
     public void onOpen(Session session, @PathParam("contestId") String contestId, EndpointConfig config) {
@@ -74,65 +102,28 @@ public class ContestFeedWebSocket {
         CompositeFilter filter = new CompositeFilter();
 
         String user = session.getUserPrincipal() != null ? session.getUserPrincipal().getName() : "anonymous";
-        PrintWriter pw = new PrintWriter(new Writer() {
-            private final StringBuilder buffer = new StringBuilder(32 * 1024); // 32KB buffer
+        PrintWriter pw = new PrintWriter(new WebSocketLineWriter(session), true);
 
-            @Override
-            public synchronized void write(char[] cbuf, int off, int len) throws IOException {
-                if (!session.isOpen())
-                    return;
-
-                int start = off;
-                int end = off + len;
-                for (int i = off; i < end; i++) {
-                    if (cbuf[i] == '\n') {
-                        // append up to before newline
-                        if (i > start)
-                            buffer.append(cbuf, start, i - start);
-
-                        // send one complete message per line (including newline for heartbeats)
-                        String msg;
-                        if (buffer.length() == 0) {
-                            // heartbeat (empty line)
-                            msg = "\n";
-                        } else {
-                            msg = buffer.toString() + "\n";
-                        }
-                        session.getBasicRemote().sendText(msg);
-                        buffer.setLength(0);
-                        start = i + 1; // next segment starts after newline
-                    }
-                }
-
-                // append any remaining (no newline encountered)
-                if (start < end)
-                    buffer.append(cbuf, start, end - start);
+        int ind = getEventIndex(session, contest);
+        if (ind == -2) {
+            try {
+                session.close(new CloseReason(CloseCodes.UNEXPECTED_CONDITION, "Invalid event id"));
+                return;
+            } catch (IOException e) {
+                Trace.trace(Trace.ERROR, "Error closing websocket", e);
             }
-
-            @Override
-            public synchronized void flush() throws IOException {
-                if (!session.isOpen())
-                    return;
-                if (buffer.length() > 0) {
-                    session.getBasicRemote().sendText(buffer.toString());
-                    buffer.setLength(0);
-                }
-            }
-
-            @Override
-            public synchronized void close() throws IOException {
-                flush();
-            }
-        }, true);
-
+        }
         final NDJSONFeedWriter writer = new NDJSONFeedWriter(pw);
         final String prefix = NDJSONFeedWriter.getContestPrefix(contest);
-        final ContestObjectQueue queue = new ContestObjectQueue(0);
+        final ContestObjectQueue queue = new ContestObjectQueue(ind);
         listener = (contest2, obj, delta) -> queue.add(obj, delta);
         cc.add(session);
+        cc.incrementFeed();
+        cc.incrementWS();
+
         ContestFeedExecutor.getInstance().addFeedSource(new Feed() {
             protected int count = 0;
-            protected int ind = 0;
+            protected int ind3 = ind;
 
             @Override
             public synchronized boolean doOutput() {
@@ -143,7 +134,7 @@ public class ContestFeedWebSocket {
                     while (co != null) {
                         IContestObject obj = filter.filter(co.obj);
                         if (obj != null) {
-                            writer.writeEvent(obj, prefix + (ind++), co.d);
+                            writer.writeEvent(obj, prefix + (ind3++), co.d);
                             count = 0;
                         }
                         co = queue.poll();
@@ -165,7 +156,7 @@ public class ContestFeedWebSocket {
                     }
                     return true;
                 } catch (Throwable t) {
-                    Trace.trace(Trace.ERROR, "Error writing to event feed", t);
+                    t.printStackTrace();
                     remove();
                     return false;
                 }
@@ -186,13 +177,31 @@ public class ContestFeedWebSocket {
     }
 
     @OnClose
-    public void onClose(Session session) {
+    public void onClose(Session session, CloseReason reason) {
         if (contest != null && listener != null) {
             contest.removeListener(listener);
         }
         if (cc != null) {
             cc.remove(session);
         }
-        Trace.trace(Trace.USER, "WebSocket closed");
+        if (reason != null) {
+            Trace.trace(Trace.USER, "WebSocket closed: code=" + reason.getCloseCode().getCode() + ", reason="
+                    + reason.getReasonPhrase());
+        } else {
+            Trace.trace(Trace.USER, "WebSocket closed");
+        }
+    }
+
+    @OnMessage
+    public void onMessage(Session session, String message) {
+        String s = message;
+        if (s.length() > TRACE_CHARS)
+            s = s.substring(0, TRACE_CHARS) + "...";
+        Trace.trace(Trace.INFO, session.getId() + " " + s);
+    }
+
+    @OnError
+    public void onError(Session session, Throwable t) {
+        Trace.trace(Trace.ERROR, "WebSocket error", t);
     }
 }

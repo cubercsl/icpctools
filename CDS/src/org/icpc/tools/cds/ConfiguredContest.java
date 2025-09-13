@@ -905,7 +905,7 @@ public class ConfiguredContest {
 	public void add(Session session) {
 		synchronized (clients) {
 			try {
-				String user = session.getUserPrincipal() + " @ " + session.getId();
+				String user = (session.getUserPrincipal() == null ? "anonymous" : session.getUserPrincipal().getName()) + " @ " + session.getId();
 				clients.put(session, user);
 			} catch (Exception e) {
 				// ignore
