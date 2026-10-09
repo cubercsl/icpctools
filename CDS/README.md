@@ -274,11 +274,11 @@ These are the supported modes:
     multiplier=""/>
 ```
 
-The *test* element is used to enable test (_contest playback_) mode. 
-When you enable test mode the CDS will attempt to play back a past contest based on the content of
-the specified _contest path_ (see the *contest* element, above) -- meaning, the CDS will provide 
-responses to service requests as if the requested data came from the specified contest, 
-at the time rate and sequence order in which they actually occurred in that contest. 
+The *test* element enables test (_contest playback_) mode. The CDS replays a past contest from
+the specified _contest path_ (see the *contest* element above), exposing its data in contest-time
+order at the configured speed. For local archives and event-feed files, timed events are replayed
+only after all contest data has been read. If the configured start time has already passed, replay
+catches up to the current replay time after loading.
 The attributes associated with this element are as follows:
 
 * countdown: a string giving the number of seconds before the contest playback should start

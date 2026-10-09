@@ -9,6 +9,9 @@ import org.icpc.tools.cds.ConfiguredContest;
 import org.icpc.tools.contest.Trace;
 import org.icpc.tools.contest.model.IContestObject;
 import org.icpc.tools.contest.model.IContestObject.ContestType;
+import org.icpc.tools.contest.model.feed.ContestSource;
+import org.icpc.tools.contest.model.feed.ContestSource.ConnectionState;
+import org.icpc.tools.contest.model.feed.RESTContestSource;
 import org.icpc.tools.contest.model.feed.Timestamp;
 import org.icpc.tools.contest.model.internal.Info;
 import org.icpc.tools.contest.model.internal.Judgement;
@@ -22,10 +25,10 @@ import org.icpc.tools.contest.model.internal.TimedEvent;
 public class ReplayContest extends CDSContest {
 	protected ConfiguredContest cc;
 	protected double timeMultiplier;
-	protected Long startTime;
-	protected boolean stopReplay = false;
+	protected volatile Long startTime;
+	protected volatile boolean stopReplay = false;
 
-	protected Thread startThread;
+	protected volatile Thread startThread;
 
 	protected List<IContestObject> timedObject = new ArrayList<IContestObject>();
 
@@ -42,10 +45,22 @@ public class ReplayContest extends CDSContest {
 
 		timeMultiplier = cc.getTest().getMultiplier();
 
-		createReplayThread();
+		ContestSource source = cc.getContestSource();
+		if (source instanceof RESTContestSource && ((RESTContestSource) source).getURL() != null) {
+			createReplayThread();
+		} else {
+			// The local queue must be complete before generating intermediate events.
+			source.addListener(state -> {
+				if (state == ConnectionState.INITIALZED)
+					createReplayThread();
+			});
+		}
 	}
 
-	private void createReplayThread() {
+	private synchronized void createReplayThread() {
+		if (stopReplay || startThread != null)
+			return;
+
 		startThread = new Thread("Contest replay") {
 			@Override
 			public void run() {
@@ -73,20 +88,18 @@ public class ReplayContest extends CDSContest {
 		startThread.start();
 	}
 
-	public void stopReplay() {
+	public synchronized void stopReplay() {
 		stopReplay = true;
 
-		startThread.interrupt();
+		if (startThread != null)
+			startThread.interrupt();
 	}
 
 	@Override
 	public Info setContestStart(Long startTime, Long countdownTime) {
 		this.startTime = startTime;
-		try {
+		if (startThread != null)
 			startThread.interrupt();
-		} catch (Exception e) {
-			// ignore
-		}
 		return super.setContestStart(startTime, countdownTime);
 	}
 
